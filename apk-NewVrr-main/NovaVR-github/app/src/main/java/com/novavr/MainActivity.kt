@@ -17,6 +17,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : AppCompatActivity() {
     private lateinit var vr: VrGlView
@@ -24,9 +25,9 @@ class MainActivity : AppCompatActivity() {
     private var tracker: HandTracker? = null
     private lateinit var depth: DepthNet
     private val exec = Executors.newSingleThreadExecutor()
-    private val perm = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
-        if (it) startCamera() else Toast.makeText(this, "Sem permissão da câmera: só o olhar funciona", Toast.LENGTH_LONG).show()
-    }
+    private val handExec = Executors.newSingleThreadExecutor()    // rastreio das maos em thread propria: a camera de fundo nao espera por ele
+    private val handBusy = AtomicBoolean(false)
+    private val perm = registerForActivityResult(ActivityResultContracts.RequestPermission()) { if (it) startCamera() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,9 +68,13 @@ class MainActivity : AppCompatActivity() {
                     b = Bitmap.createBitmap(b, 0, 0, b.width, b.height, m, true)
                 }
                 px.close()
-                // detecta em TODO quadro e entrega imagem + maos juntas (mao alinhada com a camera)
-                val hs = try { tracker?.detect(b) ?: emptyList() } catch (e: Exception) { emptyList() }
-                vr.pushFrame(b, hs)
+                vr.cam = b
+                val t = tracker
+                if (t != null && handBusy.compareAndSet(false, true)) {   // so um quadro por vez, sempre o mais recente
+                    handExec.execute {
+                        try { vr.hands = t.detect(b) } catch (e: Exception) { vr.hands = emptyList() } finally { handBusy.set(false) }
+                    }
+                }
             }
             val p = f.get()
             p.unbindAll()
@@ -82,6 +87,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        exec.shutdown(); tracker?.close(); browser.release()
+        exec.shutdown(); handExec.shutdown()
+        try { tracker?.close() } catch (e: Exception) { }
+        browser.release()
     }
 }
