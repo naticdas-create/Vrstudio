@@ -5,11 +5,15 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: NovaVR-github
     steps:
       - uses: actions/checkout@v4
+      - name: Achar a pasta do projeto
+        id: proj
+        run: |
+          f=$(find . -name settings.gradle.kts | head -n 1)
+          if [ -z "$f" ]; then echo "settings.gradle.kts nao encontrado no repositorio"; exit 1; fi
+          echo "dir=$(dirname "$f")" >> "$GITHUB_OUTPUT"
+          echo "Projeto em: $(dirname "$f")"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -18,12 +22,14 @@ jobs:
         with:
           gradle-version: 8.7
       - name: Baixar modelo de maos
+        working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           mkdir -p app/src/main/assets
           curl -L -o app/src/main/assets/hand_landmarker.task https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
       - name: Compilar
+        working-directory: ${{ steps.proj.outputs.dir }}
         run: gradle assembleDebug --stacktrace
       - uses: actions/upload-artifact@v4
         with:
           name: NovaVR-apk
-          path: NovaVR-github/app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ steps.proj.outputs.dir }}/app/build/outputs/apk/debug/app-debug.apk
