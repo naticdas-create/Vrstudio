@@ -11,6 +11,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
 import android.hardware.Sensor
@@ -152,7 +153,7 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
     private val addr = Win("addr", 2.2f, .14f, 1760, 112, false).also { it.sd = 2.2f; it.sy = .93f; it.rad = .07f }
     private val apps = Win("apps", 1.3f, .9f, 1040, 720).also { it.title = "Biblioteca"; it.sd = 2.0f; it.sy = .1f; it.sa = -38f; it.rad = .07f }
     private val kb = Win("kb", 1.6f, .65f, 1280, 520).also { it.title = "Teclado"; it.sd = 1.6f; it.sy = -1.1f; it.rad = .06f }
-    private val cfg = Win("cfg", 1f, .8f, 1000, 800).also { it.title = "Configuracoes"; it.sd = 2.0f; it.sy = .1f; it.sa = 38f; it.rad = .06f }
+    private val cfg = Win("cfg", 1f, .88f, 1000, 880).also { it.title = "Configuracoes"; it.sd = 2.0f; it.sy = .1f; it.sa = 38f; it.rad = .06f }
     private val wins = listOf(browserWin, addr, dock, apps, kb, cfg)
 
     private class App(val id: String, val name: String, val url: String, val color: Int, val glyph: String)
@@ -200,6 +201,24 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
     private var depthTex = 0; private var lastDepthVer = -1; private var lastDepthStatus = ""
     private var curEye = 0
     private var wDepth = 0; private var wVp = 0; private var wCrop = 0; private var wOcc = 0
+    private fun onWebFocus(f: Boolean) {
+        if (f) {
+            typeToPage = true
+            if (!kb.visible) { kb.visible = true; spawn(kb); kbAuto = true }
+            ui("kb", "dock")
+        } else if (kbAuto && typeToPage) { kb.visible = false; kbAuto = false; ui("dock") }
+    }
+    private fun typeKey(t: String) { if (typeToPage) post { browser.typeText(t) } else text += t }
+    private fun typeDel() { if (typeToPage) post { browser.typeBackspace() } else text = text.dropLast(1) }
+    private fun typeEnter() { if (typeToPage) post { browser.typeEnter() } else go() }
+    private fun press(h: Hit, id: String) {
+        if (h.win === addr && id == "kb") {                           // tocar na barra de endereco: digita o endereco
+            typeToPage = false; kbAuto = false
+            if (!kb.visible) { kb.visible = true; spawn(kb) }
+            ui("kb", "dock", "addr"); return
+        }
+        onButton(id)
+    }
     @Suppress("DEPRECATION")
     private fun displayRotation(): Int = act.windowManager.defaultDisplay.rotation
     @Volatile private var tap = false
@@ -412,13 +431,14 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
         }
         key(c, w, "k:sp", "Espaco", RectF(40f, 404f, 480f, 488f))
         key(c, w, "k:del", "Apagar", RectF(500f, 404f, 760f, 488f))
-        key(c, w, "k:go", "Ir", RectF(780f, 404f, 1040f, 488f))
+        key(c, w, "k:go", if (typeToPage) "Enter" else "Ir", RectF(780f, 404f, 1040f, 488f))
+        key(c, w, "k:tgt", if (typeToPage) "Pagina" else "Endereco", RectF(1060f, 404f, 1240f, 488f), 24f)
         w.dirty = true
     }
 
     private fun drawCfg() {
         val w = cfg; val b = ensure(w); b.eraseColor(0); val c = Canvas(b); w.btns.clear()
-        panelBg(c, 1000, 800, 44f)
+        panelBg(c, 1000, 880, 44f)
         val rows = listOf(
             Triple("Lente k1", String.format(Locale.US, "%.2f", k1), "k1"),
             Triple("Lente k2", String.format(Locale.US, "%.2f", k2), "k2"),
@@ -435,13 +455,14 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
         key(c, w, "hand", if (dominantRight) "Mao dominante: Direita" else "Mao dominante: Esquerda", RectF(40f, 460f, 660f, 525f), 28f)
         key(c, w, "diag", if (showDiag) "Diagnostico: ON" else "Diagnostico: OFF", RectF(680f, 460f, 960f, 525f), 24f)
         key(c, w, "pdir", "Clique: empurrar o dedo " + (if (pushDir > 0) "para FRENTE" else "para TRAS"), RectF(40f, 545f, 960f, 610f), 26f)
+        key(c, w, "hs", if (handStyle == 0) "Mao: Vidro 3D" else "Mao: So contorno", RectF(40f, 630f, 960f, 695f), 26f)
         val dnc = depth
         key(c, w, "occ", if (dnc == null) "Oclusao (IA): indisponivel" else if (dnc.enabled) "Oclusao (IA): Ligada" else "Oclusao (IA): Desligada",
-            RectF(40f, 630f, 600f, 700f), 26f)
+            RectF(40f, 715f, 600f, 785f), 26f)
         tp.textAlign = Paint.Align.LEFT; tp.textSize = 24f; tp.color = 0xFF9AA3BD.toInt()
-        c.drawText("IA: " + (dnc?.status ?: "-"), 630f, 675f, tp)
+        c.drawText("IA: " + (dnc?.status ?: "-"), 630f, 760f, tp)
         tp.textAlign = Paint.Align.LEFT; tp.textSize = 26f; tp.color = 0xFF9AA3BD.toInt()
-        c.drawText("As janelas ficam fixas no mundo virtual.", 40f, 760f, tp)
+        c.drawText("As janelas ficam fixas no mundo virtual.", 40f, 840f, tp)
         w.dirty = true
     }
 
@@ -477,12 +498,14 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
             id == "k2+" -> k2 = (k2 + .03f).coerceAtMost(.4f)
             id == "ipd-" -> ipd = (ipd - .001f).coerceAtLeast(.05f)
             id == "ipd+" -> ipd = (ipd + .001f).coerceAtMost(.075f)
-            id == "k:del" -> text = text.dropLast(1)
-            id == "k:sp" -> text += " "
-            id == "k:go" -> go()
-            id.startsWith("k:") -> text += id.substring(2)
+            id == "k:del" -> typeDel()
+            id == "k:sp" -> typeKey(" ")
+            id == "k:go" -> typeEnter()
+            id == "k:tgt" -> typeToPage = !typeToPage
+            id == "hs" -> handStyle = (handStyle + 1) % 2
+            id.startsWith("k:") -> typeKey(id.substring(2))
         }
-        ui("dock", "addr", "cfg")
+        ui("dock", "addr", "cfg", "kb")
     }
 
     private fun sendTouch(action: Int, x: Float, y: Float) { post { browser.touch(action, x, y) } }
@@ -511,7 +534,20 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
     private val palmBase = FloatArray(2); private val palmNow = FloatArray(2)
     private val pushT = FloatArray(2); private val pushCool = FloatArray(2); private val pushProg = FloatArray(2)
     private var pushDir = 1                                        // 1 = empurrar o dedo para FRENTE (mao fica menor na camera); -1 = para tras
-    private val HAND_COLOR = 0xE6CFE3FF.toInt()                    // contorno fino da mao (azul bem claro, como o do Quest)
+    init { browser.onTextFocus = { f -> queueEvent { onWebFocus(f) } } }
+    private val HAND_COLOR = 0xE6CFE3FF.toInt()                    // anel na ponta do dedo
+    private var handStyle = 0                                      // 0 = vidro 3D (sombreada), 1 = so contorno
+    private val HAND_RIM = 0xF0DCEBFF.toInt()                      // contorno claro da mao
+    private val HAND_TUBE = intArrayOf(0xFFBFCDEB.toInt(), 0xFFF6F9FF.toInt(), 0xFFCBD6F0.toInt(), 0xFF8796C0.toInt())
+    private val HAND_TUBE_POS = floatArrayOf(0f, .30f, .62f, 1f)
+    private val HAND_SPH = intArrayOf(0xFFF6F9FF.toInt(), 0xFFCBD6F0.toInt(), 0xFF8E9CC4.toInt())
+    private val HAND_SPH_POS = floatArrayOf(0f, .55f, 1f)
+    private class HSeg(val x1: Float, val y1: Float, val x2: Float, val y2: Float, val w: Float, val z: Float, val first: Boolean)
+    private val hsegs = ArrayList<HSeg>()
+    private val spd = FloatArray(2)                                // velocidade lateral do ponteiro (maos por segundo)
+    private var typeToPage = true                                  // teclado digita na pagina (true) ou na barra de endereco (false)
+    private var kbAuto = false                                     // teclado aberto sozinho por um campo de texto da pagina
+    private var stickKey = ""; private var stickId = ""            // botao "grudento": o tremor da mao nao troca de botao
     private var cropL = 0f; private var cropT = 0f; private var cropS = 1f
     private var cu0 = 0f; private var cv0 = 0f; private var cus = 1f; private var cvs = 1f
 
@@ -556,8 +592,8 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
             val ws = w.w * w.scale; val hs = w.h * w.scale; val th = w.thM
             if (abs(ph.lx) > ws / 2) continue
             if (abs(ph.ly) <= hs / 2) best = ph
-            else if (w.hasTitle && ph.ly < -hs / 2 && ph.ly >= -hs / 2 - th)
-                best = Hit(w, true, (ph.lx / ws + .5f) * w.tbw, ((-hs / 2 - ph.ly) / th) * w.tbh, ph.t, ph.lx, ph.ly)
+            else if (w.hasTitle && ph.ly < -hs / 2 && ph.ly >= -hs / 2 - th * 2f)
+                best = Hit(w, true, (ph.lx / ws + .5f) * w.tbw, (((-hs / 2 - ph.ly) / th) * w.tbh).coerceIn(0f, w.tbh.toFloat()), ph.t, ph.lx, ph.ly)
         }
         return best
     }
@@ -565,23 +601,40 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
     /** Botao sob o ponteiro, com uma folga em volta (imã) e escolhendo o mais proximo do centro. */
     private fun btnAt(h: Hit): String? {
         val list = if (h.title) h.win.tbBtns else h.win.btns
-        val m = if (h.title) 10f else 16f
+        val m = if (h.title) 12f else 20f
+        val scope = h.win.id + (if (h.title) "#t" else "")
         var best: String? = null; var bd = Float.MAX_VALUE
-        for (b in list) {
+        for (b in list) {                                              // 1) dentro do botao
             val r = b.r
-            if (h.bx >= r.left - m && h.bx <= r.right + m && h.by >= r.top - m && h.by <= r.bottom + m) {
+            if (h.bx >= r.left && h.bx <= r.right && h.by >= r.top && h.by <= r.bottom) {
                 val dd = hypot(h.bx - r.centerX(), h.by - r.centerY())
                 if (dd < bd) { bd = dd; best = b.id }
             }
         }
+        if (best == null && stickKey == scope) {                       // 2) continua no botao que ja estava apontado (tremor da mao)
+            for (b in list) if (b.id == stickId) {
+                val r = b.r; val mm = m + 10f
+                if (h.bx >= r.left - mm && h.bx <= r.right + mm && h.by >= r.top - mm && h.by <= r.bottom + mm) best = b.id
+            }
+        }
+        if (best == null) {                                            // 3) o mais proximo, com folga (ima)
+            for (b in list) {
+                val r = b.r
+                if (h.bx >= r.left - m && h.bx <= r.right + m && h.by >= r.top - m && h.by <= r.bottom + m) {
+                    val dd = hypot(h.bx - r.centerX(), h.by - r.centerY())
+                    if (dd < bd) { bd = dd; best = b.id }
+                }
+            }
+        }
+        stickKey = scope; stickId = best ?: ""
         return best
     }
 
     private fun activate(h: Hit, allowTouch: Boolean) {
         val id = btnAt(h)
         if (h.title) { if (id == "close" || id == "min") h.win.visible = false }
-        else if (h.win === browserWin) { if (allowTouch) { sendTouch(MotionEvent.ACTION_DOWN, h.bx, h.by); sendTouch(MotionEvent.ACTION_UP, h.bx, h.by) } }
-        else if (id != null) onButton(id)
+        else if (h.win === browserWin) { typeToPage = true; ui("kb"); if (allowTouch) { sendTouch(MotionEvent.ACTION_DOWN, h.bx, h.by); sendTouch(MotionEvent.ACTION_UP, h.bx, h.by) } }
+        else if (id != null) press(h, id)
     }
 
     private fun interact(dt: Float) {
@@ -612,15 +665,17 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
             // empurrar o dedo para FRENTE afasta a mao da camera: ela fica menor na imagem (para tras = maior)
             val ratio = if (pushDir > 0) palmBase[k] / palmNow[k] else palmNow[k] / palmBase[k]
             pushProg[k] = ((ratio - 1.02f) / .08f).coerceIn(0f, 1f)
-            if (touchMode && ratio > 1.10f && pushT[k] <= 0f && pushCool[k] <= 0f) { pushT[k] = .22f; pushCool[k] = .9f }   // clique = toque curto
+            if (touchMode && ratio > 1.10f && spd[k] < 1.5f && pushT[k] <= 0f && pushCool[k] <= 0f) { pushT[k] = .22f; pushCool[k] = .35f }   // clique = toque curto
             val tx0 = if (touchMode) tipX else ox + dx * ew * .35f
             val ty0 = if (touchMode) tipY else oy + dy * ew * .35f
             // suavizacao adaptativa: devagar = bem firme (precisao); rapido = responde logo
-            if (!sOn[k]) { sx[k] = tx0; sy[k] = ty0 }
+            if (!sOn[k]) { sx[k] = tx0; sy[k] = ty0; spd[k] = 0f }
             else {
                 val dd = hypot(tx0 - sx[k], ty0 - sy[k])
                 val al = (0.15f + 2.5f * dd / palm).coerceIn(0.15f, 0.85f)
+                val px0 = sx[k]; val py0 = sy[k]
                 sx[k] += (tx0 - sx[k]) * al; sy[k] += (ty0 - sy[k]) * al
+                spd[k] = hypot(sx[k] - px0, sy[k] - py0) / dt.coerceAtLeast(.008f) / palm
             }
             sOn[k] = true; seen[k] = true
             val press = hd.pinch || (touchMode && pushT[k] > 0f)
@@ -631,7 +686,7 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
             else if (!press) wasPress[k] = false
             val px = if (press && wasPress[k]) freeX[k] + (sx[k] - liveX0[k]) else sx[k]
             val py = if (press && wasPress[k]) freeY[k] + (sy[k] - liveY0[k]) else sy[k]
-            ptrs.add(Ptr(hd, if (touchMode) tipX else ox, if (touchMode) tipY else oy, px, py, press, k, palm))
+            ptrs.add(Ptr(hd, if (touchMode) tipX else ox, if (touchMode) tipY else oy, px, py, press, k, hsz))
         }
         for (k in 0..1) if (!seen[k]) sOn[k] = false
         // a mao nao dominante abre o menu nas pontas dos dedos; a dominante aponta e clica
@@ -747,9 +802,9 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
                         }
                     }
                 } else if (h.win === browserWin) {
-                    mode = 1; gw = h.win; lastBx = h.bx; lastBy = h.by
+                    mode = 1; gw = h.win; lastBx = h.bx; lastBy = h.by; typeToPage = true; ui("kb")
                     sendTouch(MotionEvent.ACTION_DOWN, h.bx, h.by)
-                } else if (id != null) onButton(id)
+                } else if (id != null) press(h, id)
             }
         } else if (pinch) {
             val w = gw
@@ -804,35 +859,11 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
         for (q in ptrs) {
             val fade = ((q.hand.conf - .45f) / .35f).coerceIn(0f, 1f)
             @Suppress("DEPRECATION")
-            c.saveLayerAlpha(-ew, -eh, ew, eh, (255f * fade).toInt())
+            c.saveLayerAlpha(-ew, -eh, ew, eh, (255f * fade * (if (handStyle == 0) .82f else 1f)).toInt())
             fun X(i: Int) = (q.hand.pts[2 * i] * cb.width - cropL) * cropS - ew / 2f
             fun Y(i: Int) = (q.hand.pts[2 * i + 1] * cb.height - cropT) * cropS - eh / 2f
-            val palm = hypot(X(0) - X(9), Y(0) - Y(9)).coerceAtLeast(20f)
-            // so o CONTORNO fino da mao (a mao real aparece pela camera); sem preenchimento, sem esqueleto
-            val w0 = palm * .19f
-            val ow = (palm * .012f).coerceIn(1.5f, 2.6f)
-            val segs = ArrayList<FloatArray>()
-            for ((ci, ch) in chains.withIndex()) {
-                for (k in 0 until ch.size - 1) {
-                    val t = k / (ch.size - 1f)
-                    val wd = if (k == 0) w0 * 1.1f else w0 * (1.0f - .38f * t) * (if (ci == 0) 1.08f else 1f)
-                    segs.add(floatArrayOf(X(ch[k]), Y(ch[k]), X(ch[k + 1]), Y(ch[k + 1]), wd))
-                }
-            }
-            val pm = Path(); pm.moveTo(X(0), Y(0))
-            for (i in intArrayOf(1, 5, 9, 13, 17)) pm.lineTo(X(i), Y(i))
-            pm.close()
-            hp.strokeCap = Paint.Cap.ROUND; hp.strokeJoin = Paint.Join.ROUND
-            hp.shader = null; hp.xfermode = null
-            hp.style = Paint.Style.STROKE; hp.color = HAND_COLOR
-            for (sg in segs) { hp.strokeWidth = sg[4] + 2f * ow; c.drawLine(sg[0], sg[1], sg[2], sg[3], hp) }
-            hp.style = Paint.Style.FILL_AND_STROKE; hp.strokeWidth = 2f * ow
-            c.drawPath(pm, hp)
-            hp.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)       // apaga o miolo: sobra so a linha da borda
-            hp.style = Paint.Style.STROKE
-            for (sg in segs) { hp.strokeWidth = sg[4]; c.drawLine(sg[0], sg[1], sg[2], sg[3], hp) }
-            hp.style = Paint.Style.FILL; c.drawPath(pm, hp)
-            hp.xfermode = null
+            val xs = FloatArray(21) { X(it) }; val ys = FloatArray(21) { Y(it) }
+            drawHand(c, q.hand, xs, ys)
             val aiming = q === pointerP && !(menuBtns.isNotEmpty() && pointerP === hostP)
             if (aiming && !touchMode) {                                  // raio fino, so no modo laser
                 hp.style = Paint.Style.STROKE; hp.strokeWidth = 2f; hp.color = 0x55FFFFFF
@@ -848,6 +879,66 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
         }
         for (mb in menuBtns) drawMenuBtn(c, mb)
         hp.style = Paint.Style.FILL
+    }
+
+    /** Mao 2.5D: tubos sombreados (luz de cima/esquerda), juntas redondas, palma suave e contorno claro; dedos ordenados por profundidade. */
+    private fun drawHand(c: Canvas, hd: Hand, xs: FloatArray, ys: FloatArray) {
+        val s = max(hypot(xs[0] - xs[9], ys[0] - ys[9]), hypot(xs[5] - xs[17], ys[5] - ys[17]) * 1.15f).coerceAtLeast(24f)
+        val ow = (s * .012f).coerceIn(1.5f, 2.6f)
+        val fwid = floatArrayOf(.150f, .150f, .140f, .125f)          // largura relativa: indicador, medio, anelar, minimo
+        hsegs.clear()
+        for (f in 0..3) for (k in 0..2) {
+            val a = 5 + 4 * f + k
+            hsegs.add(HSeg(xs[a], ys[a], xs[a + 1], ys[a + 1], s * fwid[f] * (1f - .13f * k), (hd.z[a] + hd.z[a + 1]) / 2f, k == 0))
+        }
+        for (k in 0..2) {
+            val a = 1 + k
+            hsegs.add(HSeg(xs[a], ys[a], xs[a + 1], ys[a + 1], s * .19f * (1f - .14f * k), (hd.z[a] + hd.z[a + 1]) / 2f, k == 0))
+        }
+        val pr = s * .075f
+        val pm = Path(); pm.moveTo(xs[0], ys[0])
+        for (i in intArrayOf(1, 5, 9, 13, 17)) pm.lineTo(xs[i], ys[i])
+        pm.close()
+        val pcx = (xs[0] + xs[1] + xs[5] + xs[9] + xs[13] + xs[17]) / 6f
+        val pcy = (ys[0] + ys[1] + ys[5] + ys[9] + ys[13] + ys[17]) / 6f
+        hp.shader = null; hp.xfermode = null
+        hp.strokeCap = Paint.Cap.ROUND; hp.strokeJoin = Paint.Join.ROUND
+        // 1) contorno claro: desenhado maior, fica so por fora do corpo
+        hp.color = HAND_RIM
+        hp.style = Paint.Style.STROKE
+        for (sg in hsegs) { hp.strokeWidth = sg.w + 2f * ow; c.drawLine(sg.x1, sg.y1, sg.x2, sg.y2, hp) }
+        hp.style = Paint.Style.FILL_AND_STROKE; hp.strokeWidth = 2f * (pr + ow); c.drawPath(pm, hp)
+        if (handStyle == 1) {                                          // so contorno: apaga o miolo
+            hp.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
+            hp.style = Paint.Style.STROKE
+            for (sg in hsegs) { hp.strokeWidth = sg.w; c.drawLine(sg.x1, sg.y1, sg.x2, sg.y2, hp) }
+            hp.style = Paint.Style.FILL_AND_STROKE; hp.strokeWidth = 2f * pr; c.drawPath(pm, hp)
+            hp.xfermode = null
+            return
+        }
+        // 2) palma
+        hp.shader = RadialGradient(pcx - s * .18f, pcy - s * .22f, s * .95f, HAND_SPH, HAND_SPH_POS, Shader.TileMode.CLAMP)
+        hp.style = Paint.Style.FILL_AND_STROKE; hp.strokeWidth = 2f * pr
+        c.drawPath(pm, hp)
+        // 3) dedos, do mais longe para o mais perto da camera
+        for (sg in hsegs.sortedByDescending { it.z }) {
+            val dx = sg.x2 - sg.x1; val dy = sg.y2 - sg.y1
+            val len = hypot(dx, dy).coerceAtLeast(.001f)
+            var nx = -dy / len; var ny = dx / len
+            if (nx * -.55f + ny * -.83f < 0f) { nx = -nx; ny = -ny }    // normal aponta para o lado da luz
+            val mx = (sg.x1 + sg.x2) / 2f; val my = (sg.y1 + sg.y2) / 2f; val r = sg.w / 2f
+            hp.shader = LinearGradient(mx + nx * r, my + ny * r, mx - nx * r, my - ny * r, HAND_TUBE, HAND_TUBE_POS, Shader.TileMode.CLAMP)
+            hp.style = Paint.Style.STROKE; hp.strokeWidth = sg.w
+            c.drawLine(sg.x1, sg.y1, sg.x2, sg.y2, hp)
+            hp.style = Paint.Style.FILL
+            if (sg.first) {
+                hp.shader = RadialGradient(sg.x1 - r * .35f, sg.y1 - r * .4f, r * 1.25f, HAND_SPH, HAND_SPH_POS, Shader.TileMode.CLAMP)
+                c.drawCircle(sg.x1, sg.y1, r, hp)
+            }
+            hp.shader = RadialGradient(sg.x2 - r * .35f, sg.y2 - r * .4f, r * 1.25f, HAND_SPH, HAND_SPH_POS, Shader.TileMode.CLAMP)
+            c.drawCircle(sg.x2, sg.y2, r * .94f, hp)
+        }
+        hp.shader = null
     }
 
     /** Botao redondo na ponta do dedo, com icone desenhado (casa, teclado, centrar, engrenagem). */
