@@ -11,13 +11,16 @@ import android.os.SystemClock
 import android.view.Display
 import android.view.InputDevice
 import android.view.MotionEvent
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import org.json.JSONObject
 
 /**
  * Roda um WebView numa tela virtual (Presentation) e entrega os quadros como Bitmap.
  * Assim o vídeo do YouTube (que usa camada de hardware) aparece corretamente.
+ * Tambem digita na pagina (campo de texto em foco) e avisa quando um campo de texto ganha/perde o foco.
  */
 class BrowserSurface(private val ctx: Context, val w: Int = 1280, val h: Int = 720) {
     private val reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 3)
@@ -29,8 +32,14 @@ class BrowserSurface(private val ctx: Context, val w: Int = 1280, val h: Int = 7
     private var bmp: Bitmap? = null
     private var downTime = 0L
     @Volatile var version = 0
+    /** Chamado (em outra thread) quando um campo de texto da pagina ganha (true) ou perde (false) o foco. */
+    @Volatile var onTextFocus: ((Boolean) -> Unit)? = null
 
-    private class Pres(c: Context, d: Display, val first: String) : Presentation(c, d) {
+    private class Bridge(val owner: BrowserSurface) {
+        @JavascriptInterface fun focus(f: Boolean) { owner.onTextFocus?.invoke(f) }
+    }
+
+    private class Pres(c: Context, d: Display, val first: String, val owner: BrowserSurface) : Presentation(c, d) {
         lateinit var web: WebView
         override fun onCreate(s: Bundle?) {
             super.onCreate(s)
@@ -40,20 +49,29 @@ class BrowserSurface(private val ctx: Context, val w: Int = 1280, val h: Int = 7
                 settings.mediaPlaybackRequiresUserGesture = false
                 settings.userAgentString =
                     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-                isFocusable = true
-                isFocusableInTouchMode = true
-                webViewClient = WebViewClient()
+                addJavascriptInterface(Bridge(owner), "NovaBridge")
+                webViewClient = object : WebViewClient() {
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        view?.evaluateJavascript(FOCUS_JS, null)
+                    }
+                }
                 webChromeClient = WebChromeClient()
                 loadUrl(first)
             }
             setContentView(web)
-            web.requestFocus()
         }
     }
 
-    fun start(url: String) { pres = Pres(ctx, vd.display, url).also { it.show() } }
+    fun start(url: String) { pres = Pres(ctx, vd.display, url, this).also { it.show() } }
     fun load(url: String) { pres?.web?.loadUrl(url) }
     fun back() { pres?.web?.let { if (it.canGoBack()) it.goBack() } }
+
+    private fun js(code: String) { pres?.web?.evaluateJavascript(code, null) }
+
+    /** Digita texto no campo em foco da pagina (chame na thread de UI). */
+    fun typeText(s: String) { js("(function(t){" + ACTIVE_JS + SET_JS + INSERT_JS + "})(" + JSONObject.quote(s) + ")") }
+    fun typeBackspace() { js("(function(){" + ACTIVE_JS + SET_JS + DELETE_JS + "})()") }
+    fun typeEnter() { js("(function(){" + ACTIVE_JS + ENTER_JS + "})()") }
 
     /** Chame na thread de UI; devolve o quadro mais recente (largura do bitmap pode ser maior que w). */
     fun poll(): Bitmap? {
@@ -77,54 +95,27 @@ class BrowserSurface(private val ctx: Context, val w: Int = 1280, val h: Int = 7
         ev.recycle()
     }
 
-
-    // ---------- digitacao dentro da pagina (chamar na thread de UI) ----------
-    private fun jsq(s: String): String {
-        val sb = StringBuilder("'")
-        for (c in s) when (c) {
-            '\\' -> sb.append("\\\\")
-            '\'' -> sb.append("\\'")
-            '\n' -> sb.append("\\n")
-            else -> sb.append(c)
-        }
-        return sb.append("'").toString()
-    }
-
-    private val ACTIVE = "var e=document.activeElement;while(e&&e.shadowRoot&&e.shadowRoot.activeElement)e=e.shadowRoot.activeElement;"
-
-    fun typeText(s: String) {
-        val js = "(function(c){" + ACTIVE + "if(!e)return;var ok=false;try{ok=document.execCommand('insertText',false,c);}catch(x){}" +
-            "if(!ok&&('value' in e)){var a=e.selectionStart,z=e.selectionEnd,v=e.value||'';if(a==null){a=v.length;z=a;}" +
-            "e.value=v.slice(0,a)+c+v.slice(z);try{e.selectionStart=e.selectionEnd=a+c.length;}catch(x){}" +
-            "e.dispatchEvent(new Event('input',{bubbles:true}));}})(" + jsq(s) + ")"
-        pres?.web?.evaluateJavascript(js, null)
-    }
-
-    fun backspace() {
-        val js = "(function(){" + ACTIVE + "if(!e)return;var ok=false;try{ok=document.execCommand('delete');}catch(x){}" +
-            "if(!ok&&('value' in e)&&e.value){var a=e.selectionStart,z=e.selectionEnd;if(a==null){a=e.value.length;z=a;}" +
-            "if(a==z&&a>0)a--;e.value=e.value.slice(0,a)+e.value.slice(z);try{e.selectionStart=e.selectionEnd=a;}catch(x){}" +
-            "e.dispatchEvent(new Event('input',{bubbles:true}));}})()"
-        pres?.web?.evaluateJavascript(js, null)
-    }
-
-    fun enter() {
-        val js = "(function(){" + ACTIVE + "if(!e)return;var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true};" +
-            "var go=e.dispatchEvent(new KeyboardEvent('keydown',o));e.dispatchEvent(new KeyboardEvent('keypress',o));" +
-            "e.dispatchEvent(new KeyboardEvent('keyup',o));" +
-            "if(go){if((e.tagName||'')==='TEXTAREA'){document.execCommand('insertText',false,'\\n');}" +
-            "else{var f=e.form||(e.closest&&e.closest('form'));if(f){if(f.requestSubmit)f.requestSubmit();else f.submit();}}}})()"
-        pres?.web?.evaluateJavascript(js, null)
-    }
-
-    /** Diz se o foco da pagina esta num campo de texto (para abrir o teclado sozinho). */
-    fun queryEditable(cb: (Boolean) -> Unit) {
-        val w = pres?.web ?: return
-        val js = "(function(){" + ACTIVE + "if(!e)return false;var t=(e.tagName||'').toLowerCase();if(t==='textarea')return true;" +
-            "if(t==='input'){var y=(e.type||'text').toLowerCase();return ['button','checkbox','radio','submit','range','color','file','image','reset'].indexOf(y)<0;}" +
-            "return !!e.isContentEditable;})()"
-        w.evaluateJavascript(js) { r -> cb(r == "true") }
-    }
-
     fun release() { pres?.dismiss(); vd.release(); reader.close() }
+
+    private companion object {
+        // campo de texto em foco (inclusive dentro de shadow DOM)
+        const val ACTIVE_JS = "var e=document.activeElement;while(e&&e.shadowRoot&&e.shadowRoot.activeElement)e=e.shadowRoot.activeElement;if(!e)return;"
+        // escreve o valor do jeito que frameworks (React, Polymer) percebem
+        const val SET_JS = "function sv(e,v){if(typeof e.value!=='string')return;var P=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;" +
+            "Object.getOwnPropertyDescriptor(P,'value').set.call(e,v);e.dispatchEvent(new Event('input',{bubbles:true}));}"
+        const val INSERT_JS = "if(e.isContentEditable){document.execCommand('insertText',false,t);return;}" +
+            "if(typeof e.value!=='string')return;var a=e.selectionStart,b=e.selectionEnd;if(a==null){a=b=e.value.length;}" +
+            "sv(e,e.value.slice(0,a)+t+e.value.slice(b));try{e.selectionStart=e.selectionEnd=a+t.length;}catch(x){}"
+        const val DELETE_JS = "if(e.isContentEditable){document.execCommand('delete');return;}" +
+            "if(typeof e.value!=='string')return;var a=e.selectionStart,b=e.selectionEnd;if(a==null){a=b=e.value.length;}" +
+            "if(a===b){if(a===0)return;a=a-1;}sv(e,e.value.slice(0,a)+e.value.slice(b));try{e.selectionStart=e.selectionEnd=a;}catch(x){}"
+        const val ENTER_JS = "var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true};" +
+            "var go=e.dispatchEvent(new KeyboardEvent('keydown',o));e.dispatchEvent(new KeyboardEvent('keypress',o));e.dispatchEvent(new KeyboardEvent('keyup',o));" +
+            "if(go&&e.form){if(e.form.requestSubmit)e.form.requestSubmit();else e.form.submit();}"
+        // avisa o app quando um campo de texto ganha/perde o foco (abre/fecha o teclado sozinho)
+        const val FOCUS_JS = "(function(){if(window.__nvf)return;window.__nvf=1;" +
+            "function ed(t){return !!t&&((t.tagName==='INPUT'&&!/^(button|checkbox|radio|submit|image|range|color|file|reset)/i.test(t.type||''))||t.tagName==='TEXTAREA'||t.isContentEditable);}" +
+            "document.addEventListener('focusin',function(ev){NovaBridge.focus(ed(ev.target));},true);" +
+            "document.addEventListener('focusout',function(){setTimeout(function(){NovaBridge.focus(ed(document.activeElement));},60);},true);})();"
+    }
 }
