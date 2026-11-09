@@ -10,14 +10,12 @@ import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.hypot
-import kotlin.math.sqrt
 
 /**
- * pts = 21 pontos (x,y normalizados) da mao.
- * slot = 0 ou 1: identidade ESTAVEL da mao (casada por posicao, nao pelo rotulo esquerda/direita, que o MediaPipe troca toda hora).
+ * pts = 21 pontos (x,y normalizados) da mao; z = profundidade relativa de cada ponto (menor = mais perto da camera).
+ * left = indice do "slot" da mao (true = slot 0, false = slot 1): fixo por mao, nao depende do rotulo Esquerda/Direita.
  * pinch = pinca do indicador (estado confirmado); strength = progresso da pinca de 0 a 1;
- * mid/ring/pinky = pinca dos outros dedos; conf = 1 com mao detectada, cai a 0 durante uma perda curta;
- * held = true quando o rastreio falhou e a mao esta sendo mantida (pinca continua valendo, o arrasto nao solta).
+ * mid/ring/pinky = pinca do dedo medio/anelar/minimo; conf = confianca do rastreio (0 a 1).
  */
 class Hand(
     val left: Boolean,
@@ -28,11 +26,13 @@ class Hand(
     val ring: Boolean = false,
     val pinky: Boolean = false,
     val conf: Float = 1f,
-    val held: Boolean = false,
-    val slot: Int = 0
+    val z: FloatArray = FloatArray(21)
 )
 
-/** Filtro One Euro: parado = firme (sem tremor), em movimento = acompanha rapido. */
+/**
+ * Filtro One Euro: parado = bem firme (sem tremor), em movimento = acompanha rapido (sem atraso).
+ * minCut baixo = mais firme; beta alto = mais rapido ao mover.
+ */
 private class OneEuro(private val minCut: Float, private val beta: Float) {
     private var xp = 0f
     private var dxp = 0f
@@ -57,26 +57,19 @@ class HandTracker(ctx: Context) {
         HandLandmarker.HandLandmarkerOptions.builder()
             .setBaseOptions(BaseOptions.builder().setModelAssetPath("hand_landmarker.task").build())
             .setNumHands(2)
-            .setMinHandDetectionConfidence(0.35f)      // padrao 0.5: perdia a mao com facilidade
-            .setMinHandPresenceConfidence(0.35f)
-            .setMinTrackingConfidence(0.35f)
             .setRunningMode(RunningMode.VIDEO)
             .build()
     )
-
-    private val N = 2
-    private val HOLD_MS = 320L                                   // perdeu o rastreio: segura a mao (e a pinca) por este tempo
-    private val pin = BooleanArray(N)
-    private val pinM = BooleanArray(N)
-    private val pinR = BooleanArray(N)
-    private val pinP = BooleanArray(N)
-    private val rIs = FloatArray(N)                              // razao da pinca suavizada
-    private val sm = Array(N) { FloatArray(42) }
-    private val flt = Array(N) { Array(42) { OneEuro(1.4f, 30f) } }
-    private val active = BooleanArray(N)
-    private val lastHand = arrayOfNulls<Hand>(N)
-    private val lastSeen = LongArray(N)
-    private val wrist = Array(N) { FloatArray(2) }
+    private val pin = BooleanArray(2)
+    private val pinM = BooleanArray(2)
+    private val pinR = BooleanArray(2)
+    private val pinP = BooleanArray(2)
+    private val sm = Array(2) { FloatArray(42) }              // pontos filtrados (saida)
+    private val smz = Array(2) { FloatArray(21) }             // profundidades filtradas
+    private val flt = Array(2) { Array(42) { OneEuro(1.4f, 30f) } }
+    private val lastH = arrayOfNulls<Hand>(2)                 // ultima mao vista em cada slot
+    private val lastT = LongArray(2)
+    private val slotX = FloatArray(2); private val slotY = FloatArray(2)   // punho de cada slot (para nao trocar de mao)
     private var lastDet = 0L
 
     fun detect(b: Bitmap): List<Hand> {
@@ -85,98 +78,72 @@ class HandTracker(ctx: Context) {
         lastDet = now
         val r = lm.detectForVideo(BitmapImageBuilder(b).build(), now)
         val lms = r.landmarks()
-        val wls = r.worldLandmarks()
         val hds = r.handedness()
-        val bw = b.width.toFloat(); val bh = b.height.toFloat()
+        val n = minOf(lms.size, 2)
 
-        // descarta deteccao duplicada (duas maos "fantasma" no mesmo lugar)
-        val keep = ArrayList<Int>()
-        for (i in 0 until lms.size) {
-            var dup = false
-            for (j in keep) if (hypot(lms[i][0].x() - lms[j][0].x(), lms[i][0].y() - lms[j][0].y()) < .05f) dup = true
-            if (!dup && keep.size < N) keep.add(i)
-        }
-        val n = keep.size
-
-        // casa cada deteccao com o "slot" da mao mais proxima no quadro anterior
-        val assign = IntArray(n) { -1 }
-        val taken = BooleanArray(N)
-        val cand = ArrayList<Triple<Float, Int, Int>>()
-        for (a in 0 until n) for (s in 0 until N) {
-            if (!active[s]) continue
-            val h = lms[keep[a]]
-            cand.add(Triple(hypot(h[0].x() - wrist[s][0], h[0].y() - wrist[s][1]), a, s))
-        }
-        cand.sortBy { it.first }
-        for ((dist, a, s) in cand) {
-            if (dist < .4f && assign[a] < 0 && !taken[s]) { assign[a] = s; taken[s] = true }
-        }
-        val fresh = BooleanArray(N)
-        for (a in 0 until n) if (assign[a] < 0) {
-            val s = (0 until N).firstOrNull { !taken[it] && !active[it] }
-                ?: (0 until N).filter { !taken[it] }.minByOrNull { lastSeen[it] }
-                ?: continue
-            assign[a] = s; taken[s] = true; fresh[s] = true
+        // cada mao fica sempre no mesmo slot, pela posicao do punho (o rotulo Esquerda/Direita do modelo oscila)
+        val wx = FloatArray(n) { lms[it][0].x() }
+        val wy = FloatArray(n) { lms[it][0].y() }
+        fun live(k: Int) = lastT[k] != 0L && now - lastT[k] < 700L
+        fun dist(i: Int, k: Int) = hypot(wx[i] - slotX[k], wy[i] - slotY[k])
+        val slot = IntArray(n)
+        if (n == 1) {
+            val c0 = if (live(0)) dist(0, 0) else 9f
+            val c1 = if (live(1)) dist(0, 1) else 9f
+            slot[0] = if (c0 < 9f || c1 < 9f) (if (c0 <= c1) 0 else 1)
+            else (if (hds.getOrNull(0)?.firstOrNull()?.categoryName() == "Left") 0 else 1)
+        } else if (n == 2) {
+            if (live(0) && live(1)) {
+                val straight = dist(0, 0) + dist(1, 1); val swap = dist(0, 1) + dist(1, 0)
+                if (straight <= swap) { slot[0] = 0; slot[1] = 1 } else { slot[0] = 1; slot[1] = 0 }
+            } else if (wx[0] <= wx[1]) { slot[0] = 0; slot[1] = 1 } else { slot[0] = 1; slot[1] = 0 }
         }
 
         val out = ArrayList<Hand>()
-        val seen = BooleanArray(N)
-        for (a in 0 until n) {
-            val i = keep[a]
-            val s = assign[a]
-            if (s < 0) continue
+        val seen = BooleanArray(2)
+        for (i in 0 until n) {
             val h = lms[i]
-            val w3 = wls.getOrNull(i)
-            val cat = hds.getOrNull(i)?.firstOrNull()
-            // o MediaPipe assume imagem espelhada (selfie); a camera traseira nao e: inverte o rotulo
-            val left = cat?.categoryName() == "Right"
-            if (fresh[s]) {
-                for (f in flt[s]) f.reset()
-                pin[s] = false; pinM[s] = false; pinR[s] = false; pinP[s] = false; rIs[s] = 1f
-            }
-            // distancia: 3D em metros (world landmarks) quando existe, senao 2D corrigida pela proporcao da imagem
-            fun dist(p: Int, q: Int): Float {
-                if (w3 != null) {
-                    val dx = w3[p].x() - w3[q].x(); val dy = w3[p].y() - w3[q].y(); val dz = w3[p].z() - w3[q].z()
-                    return sqrt(dx * dx + dy * dy + dz * dz)
-                }
-                return hypot((h[p].x() - h[q].x()) * bw, (h[p].y() - h[q].y()) * bh)
-            }
-            val palm = dist(0, 9).coerceAtLeast(1e-3f)
-            val rI = dist(4, 8) / palm
-            val rM = dist(4, 12) / palm
-            val rR = dist(4, 16) / palm
-            val rP = dist(4, 20) / palm
-            rIs[s] = if (fresh[s]) rI else rIs[s] + (rI - rIs[s]) * .65f
-            val ri = rIs[s]
-            pin[s] = if (pin[s]) ri < .60f else ri < .38f
-            // os outros dedos so contam com o indicador aberto e se forem os mais proximos do polegar
-            pinM[s] = if (pinM[s]) rM < .60f else (rM < .36f && rM < rI - .08f && rI > .6f)
-            pinR[s] = if (pinR[s]) rR < .60f else (rR < .36f && rR < rI - .08f && rR < rM - .05f && rI > .6f)
-            pinP[s] = if (pinP[s]) rP < .60f else (rP < .36f && rP < rI - .08f && rP < rM - .05f && rP < rR - .05f && rI > .6f)
-            val strength = ((.78f - ri) / .42f).coerceIn(0f, 1f)
-            val sp = sm[s]
+            val k = slot[i]
+            val conf = hds.getOrNull(i)?.firstOrNull()?.score() ?: 1f
+            seen[k] = true
+            slotX[k] = wx[i]; slotY[k] = wy[i]
+            fun d(a: Int, c: Int) = hypot(h[a].x() - h[c].x(), h[a].y() - h[c].y())
+            val palm = d(0, 9).coerceAtLeast(1e-3f)
+            val rI = d(4, 8) / palm
+            val rM = d(4, 12) / palm
+            val rR = d(4, 16) / palm
+            val rP = d(4, 20) / palm
+            pin[k] = if (pin[k]) rI < 0.65f else rI < 0.4f
+            // os outros dedos so contam se forem o mais proximo do polegar (evita confundir com a pinca do indicador)
+            pinM[k] = if (pinM[k]) rM < 0.65f else (rM < 0.4f && rM < rI - 0.05f)
+            pinR[k] = if (pinR[k]) rR < 0.65f else (rR < 0.4f && rR < rI - 0.05f && rR < rM - 0.05f)
+            pinP[k] = if (pinP[k]) rP < 0.65f else (rP < 0.4f && rP < rI - 0.05f && rP < rM - 0.05f && rP < rR - 0.05f)
+            val strength = ((0.7f - rI) / 0.5f).coerceIn(0f, 1f)
+            val sp = sm[k]
+            val sz = smz[k]
             for (j in 0 until 21) {
-                sp[2 * j] = flt[s][2 * j].filter(h[j].x(), dt)
-                sp[2 * j + 1] = flt[s][2 * j + 1].filter(h[j].y(), dt)
+                sp[2 * j] = flt[k][2 * j].filter(h[j].x(), dt)
+                sp[2 * j + 1] = flt[k][2 * j + 1].filter(h[j].y(), dt)
+                sz[j] += (h[j].z() - sz[j]) * .5f
             }
-            val hand = Hand(left, sp.copyOf(), pin[s], strength, pinM[s] && !pin[s], pinR[s] && !pin[s], pinP[s] && !pin[s], 1f, false, s)
+            val hand = Hand(k == 0, sp.copyOf(), pin[k], strength, pinM[k] && !pin[k], pinR[k] && !pin[k], pinP[k] && !pin[k], conf, sz.copyOf())
             out.add(hand)
-            seen[s] = true; active[s] = true
-            lastHand[s] = hand; lastSeen[s] = now
-            wrist[s][0] = h[0].x(); wrist[s][1] = h[0].y()
+            lastH[k] = hand; lastT[k] = now
         }
-        // perdeu o rastreio de uma mao: segura a ultima pose (e a pinca) por um instante, sumindo aos poucos
-        for (s in 0 until N) {
-            if (seen[s]) continue
-            val lh = lastHand[s] ?: continue
-            val age = now - lastSeen[s]
-            if (age <= HOLD_MS) {
-                val f = (1f - age / HOLD_MS.toFloat()).coerceIn(0f, 1f)
-                out.add(Hand(lh.left, lh.pts, lh.pinch, lh.strength, false, false, false, f, true, s))
-            } else if (age > 900L) {
-                active[s] = false; lastHand[s] = null
+        for (k in 0..1) {
+            if (seen[k]) continue
+            for (f in flt[k]) f.reset()
+            val h = lastH[k]
+            val age = now - lastT[k]
+            val grace = if (h != null && h.pinch) 350L else 200L
+            if (h == null || age >= grace) {            // passou o tempo: solta tudo
+                pin[k] = false; pinM[k] = false; pinR[k] = false; pinP[k] = false
+                continue
             }
+            // perdeu o rastreio por um instante: a mao some aos poucos (como no Quest); a pinca fica presa um pouco mais
+            // para o arraste nao soltar no meio quando o modelo falha 1 ou 2 quadros
+            val c = if (h.pinch) maxOf(h.conf, .6f) else h.conf * (1f - age / 200f)
+            out.add(Hand(h.left, h.pts, h.pinch, h.strength, false, false, false, c, h.z))
         }
         return out
     }
