@@ -289,29 +289,32 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
     private fun drawTitle(w: Win) {
         val b = w.tBmp ?: Bitmap.createBitmap(w.tbw, w.tbh, Bitmap.Config.ARGB_8888).also { w.tBmp = it }
         b.eraseColor(0); val c = Canvas(b); w.tbBtns.clear()
-        panelBg(c, w.tbw, w.tbh, w.tbh / 2f)
-        tp.textAlign = Paint.Align.CENTER; tp.textSize = 28f; tp.color = 0xFFDDE2F5.toInt()
-        c.drawText(w.title, w.tbw / 2f, 40f, tp)
-        listOf("size", "min", "close").forEachIndexed { i, id ->
-            val left = w.tbw - 66f - (2 - i) * 58f
+        val hovWin = hoverKey.startsWith(w.id + ":")
+        val grab = gw === w && mode == 2
+        // barra branca de arrastar (como no Quest): pince nela e mova para levar a janela
+        val pw = (w.tbw * .22f).coerceIn(110f, 220f) * (if (grab) 1.12f else 1f)
+        val ph = if (grab) 15f else 11f
+        p.shader = null; p.style = Paint.Style.FILL
+        p.color = if (grab) 0xFFFFFFFF.toInt() else if (hovWin) 0xF2FFFFFF.toInt() else 0xB3FFFFFF.toInt()
+        c.drawRoundRect(RectF(w.tbw / 2f - pw / 2f, 30f - ph / 2f, w.tbw / 2f + pw / 2f, 30f + ph / 2f), ph / 2f, ph / 2f, p)
+        listOf("size", "close").forEachIndexed { i, id ->
+            val left = w.tbw - 118f + i * 58f
             val r = RectF(left, 6f, left + 48f, 54f)
+            w.tbBtns.add(Btn(id, r))
+            if (!hovWin && !grab) return@forEachIndexed                  // botoes so aparecem ao apontar a janela (tela limpa)
             val hot = hoverKey == w.id + ":" + id
             p.style = Paint.Style.FILL
-            p.color = if (hot) (if (id == "close") 0xFFE5484D.toInt() else 0xFF7C5CFF.toInt()) else 0xFF2B3150.toInt()
+            p.color = if (hot) (if (id == "close") 0xFFE5484D.toInt() else 0xFF7C5CFF.toInt()) else 0xB32B3150.toInt()
             c.drawCircle(r.centerX(), r.centerY(), 24f, p)
             val cx = r.centerX(); val cy = r.centerY(); val q = 9f
             p.style = Paint.Style.STROKE; p.strokeWidth = 4f; p.strokeCap = Paint.Cap.ROUND; p.color = Color.WHITE
-            when (id) {
-                "close" -> { c.drawLine(cx - q, cy - q, cx + q, cy + q, p); c.drawLine(cx - q, cy + q, cx + q, cy - q, p) }
-                "min" -> c.drawLine(cx - q, cy, cx + q, cy, p)
-                else -> {
-                    c.drawLine(cx - q, cy + q, cx + q, cy - q, p)
-                    c.drawLine(cx + q, cy - q, cx + q - 8f, cy - q, p); c.drawLine(cx + q, cy - q, cx + q, cy - q + 8f, p)
-                    c.drawLine(cx - q, cy + q, cx - q + 8f, cy + q, p); c.drawLine(cx - q, cy + q, cx - q, cy + q - 8f, p)
-                }
+            if (id == "close") { c.drawLine(cx - q, cy - q, cx + q, cy + q, p); c.drawLine(cx - q, cy + q, cx + q, cy - q, p) }
+            else {
+                c.drawLine(cx - q, cy + q, cx + q, cy - q, p)
+                c.drawLine(cx + q, cy - q, cx + q - 8f, cy - q, p); c.drawLine(cx + q, cy - q, cx + q, cy - q + 8f, p)
+                c.drawLine(cx - q, cy + q, cx - q + 8f, cy + q, p); c.drawLine(cx - q, cy + q, cx - q, cy + q - 8f, p)
             }
             p.style = Paint.Style.FILL
-            w.tbBtns.add(Btn(id, r))
         }
         w.tDirty = false
     }
@@ -739,6 +742,7 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
                         "size" -> { mode = 3; gw = h.win; gScale = h.win.scale; gLx = h.lx }
                         else -> {
                             mode = 2; gw = h.win; gDist = h.t; gPalm0 = act?.palm ?: 1f
+                            ui(h.win.id)
                             for (i in 0..2) gOff[i] = h.win.pos[i] - (o[i] + d[i] * h.t)
                         }
                     }
@@ -761,6 +765,7 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
         } else if (pinching) {
             pinching = false
             if (mode == 1) sendTouch(MotionEvent.ACTION_UP, lastBx, lastBy)
+            val g0 = gw; if (mode == 2 && g0 != null) ui(g0.id)
             mode = 0; gw = null
         }
 
