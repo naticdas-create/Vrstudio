@@ -40,11 +40,14 @@ class BrowserSurface(private val ctx: Context, val w: Int = 1280, val h: Int = 7
                 settings.mediaPlaybackRequiresUserGesture = false
                 settings.userAgentString =
                     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+                isFocusable = true
+                isFocusableInTouchMode = true
                 webViewClient = WebViewClient()
                 webChromeClient = WebChromeClient()
                 loadUrl(first)
             }
             setContentView(web)
+            web.requestFocus()
         }
     }
 
@@ -72,6 +75,55 @@ class BrowserSurface(private val ctx: Context, val w: Int = 1280, val h: Int = 7
         ev.source = InputDevice.SOURCE_TOUCHSCREEN
         pres?.window?.decorView?.dispatchTouchEvent(ev)
         ev.recycle()
+    }
+
+
+    // ---------- digitacao dentro da pagina (chamar na thread de UI) ----------
+    private fun jsq(s: String): String {
+        val sb = StringBuilder("'")
+        for (c in s) when (c) {
+            '\\' -> sb.append("\\\\")
+            '\'' -> sb.append("\\'")
+            '\n' -> sb.append("\\n")
+            else -> sb.append(c)
+        }
+        return sb.append("'").toString()
+    }
+
+    private val ACTIVE = "var e=document.activeElement;while(e&&e.shadowRoot&&e.shadowRoot.activeElement)e=e.shadowRoot.activeElement;"
+
+    fun typeText(s: String) {
+        val js = "(function(c){" + ACTIVE + "if(!e)return;var ok=false;try{ok=document.execCommand('insertText',false,c);}catch(x){}" +
+            "if(!ok&&('value' in e)){var a=e.selectionStart,z=e.selectionEnd,v=e.value||'';if(a==null){a=v.length;z=a;}" +
+            "e.value=v.slice(0,a)+c+v.slice(z);try{e.selectionStart=e.selectionEnd=a+c.length;}catch(x){}" +
+            "e.dispatchEvent(new Event('input',{bubbles:true}));}})(" + jsq(s) + ")"
+        pres?.web?.evaluateJavascript(js, null)
+    }
+
+    fun backspace() {
+        val js = "(function(){" + ACTIVE + "if(!e)return;var ok=false;try{ok=document.execCommand('delete');}catch(x){}" +
+            "if(!ok&&('value' in e)&&e.value){var a=e.selectionStart,z=e.selectionEnd;if(a==null){a=e.value.length;z=a;}" +
+            "if(a==z&&a>0)a--;e.value=e.value.slice(0,a)+e.value.slice(z);try{e.selectionStart=e.selectionEnd=a;}catch(x){}" +
+            "e.dispatchEvent(new Event('input',{bubbles:true}));}})()"
+        pres?.web?.evaluateJavascript(js, null)
+    }
+
+    fun enter() {
+        val js = "(function(){" + ACTIVE + "if(!e)return;var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true};" +
+            "var go=e.dispatchEvent(new KeyboardEvent('keydown',o));e.dispatchEvent(new KeyboardEvent('keypress',o));" +
+            "e.dispatchEvent(new KeyboardEvent('keyup',o));" +
+            "if(go){if((e.tagName||'')==='TEXTAREA'){document.execCommand('insertText',false,'\\n');}" +
+            "else{var f=e.form||(e.closest&&e.closest('form'));if(f){if(f.requestSubmit)f.requestSubmit();else f.submit();}}}})()"
+        pres?.web?.evaluateJavascript(js, null)
+    }
+
+    /** Diz se o foco da pagina esta num campo de texto (para abrir o teclado sozinho). */
+    fun queryEditable(cb: (Boolean) -> Unit) {
+        val w = pres?.web ?: return
+        val js = "(function(){" + ACTIVE + "if(!e)return false;var t=(e.tagName||'').toLowerCase();if(t==='textarea')return true;" +
+            "if(t==='input'){var y=(e.type||'text').toLowerCase();return ['button','checkbox','radio','submit','range','color','file','image','reset'].indexOf(y)<0;}" +
+            "return !!e.isContentEditable;})()"
+        w.evaluateJavascript(js) { r -> cb(r == "true") }
     }
 
     fun release() { pres?.dismiss(); vd.release(); reader.close() }
