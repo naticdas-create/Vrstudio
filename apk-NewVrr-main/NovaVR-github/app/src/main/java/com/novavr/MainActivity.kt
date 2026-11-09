@@ -22,10 +22,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var vr: VrGlView
     private lateinit var browser: BrowserSurface
     private var tracker: HandTracker? = null
-    private var fcount = 0
     private lateinit var depth: DepthNet
     private val exec = Executors.newSingleThreadExecutor()
-    private val perm = registerForActivityResult(ActivityResultContracts.RequestPermission()) { if (it) startCamera() }
+    private val perm = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        if (it) startCamera() else Toast.makeText(this, "Sem permissão da câmera: só o olhar funciona", Toast.LENGTH_LONG).show()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -66,9 +67,9 @@ class MainActivity : AppCompatActivity() {
                     b = Bitmap.createBitmap(b, 0, 0, b.width, b.height, m, true)
                 }
                 px.close()
-                vr.cam = b
-                fcount++
-                if (fcount % 2 == 0) vr.hands = try { tracker?.detect(b) ?: emptyList() } catch (e: Exception) { emptyList() }
+                // detecta em TODO quadro e entrega imagem + maos juntas (mao alinhada com a camera)
+                val hs = try { tracker?.detect(b) ?: emptyList() } catch (e: Exception) { emptyList() }
+                vr.pushFrame(b, hs)
             }
             val p = f.get()
             p.unbindAll()
