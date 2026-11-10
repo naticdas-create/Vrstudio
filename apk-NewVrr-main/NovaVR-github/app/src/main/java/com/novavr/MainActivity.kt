@@ -5,6 +5,7 @@ import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Size
 import android.view.WindowManager
 import android.widget.Toast
@@ -27,6 +28,9 @@ class MainActivity : AppCompatActivity() {
     private val exec = Executors.newSingleThreadExecutor()
     private val handExec = Executors.newSingleThreadExecutor()    // rastreio das maos em thread propria: a camera de fundo nao espera por ele
     private val handBusy = AtomicBoolean(false)
+    private var frameSeq = 0L                                       // numero do quadro da camera
+    @Volatile private var shownSeq = 0L                             // quadro que esta no fundo agora
+    @Volatile private var lastCamMs = 0L
     private val perm = registerForActivityResult(ActivityResultContracts.RequestPermission()) { if (it) startCamera() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -68,11 +72,21 @@ class MainActivity : AppCompatActivity() {
                     b = Bitmap.createBitmap(b, 0, 0, b.width, b.height, m, true)
                 }
                 px.close()
-                vr.cam = b
+                val seq = ++frameSeq
                 val t = tracker
+                val nowMs = SystemClock.uptimeMillis()
+                // o fundo so avanca sozinho se o rastreio demorar; normalmente ele muda junto com as maos (mao fantasma alinhada)
+                if (t == null || nowMs - lastCamMs > 55L) { vr.cam = b; shownSeq = seq; lastCamMs = nowMs }
                 if (t != null && handBusy.compareAndSet(false, true)) {   // so um quadro por vez, sempre o mais recente
                     handExec.execute {
-                        try { vr.hands = t.detect(b) } catch (e: Exception) { vr.hands = emptyList() } finally { handBusy.set(false) }
+                        try {
+                            vr.hands = t.detect(b)
+                            if (seq >= shownSeq) { vr.cam = b; shownSeq = seq; lastCamMs = SystemClock.uptimeMillis() }
+                        } catch (e: Exception) {
+                            vr.hands = emptyList()
+                        } finally {
+                            handBusy.set(false)
+                        }
                     }
                 }
             }
