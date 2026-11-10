@@ -355,8 +355,11 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
         c.drawRoundRect(rr, 24f, 24f, p)
         p.style = Paint.Style.FILL
         if (bmp == null) {
-            tp.textAlign = Paint.Align.CENTER; tp.textSize = size; tp.color = Color.WHITE
-            c.drawText(label, r.centerX(), r.centerY() + size * .35f, tp)
+            if (id == "lib" || id == "kb" || id == "cfg" || id == "rc") glyph(c, id, r.centerX(), r.centerY(), r.width() * .36f)
+            else {
+                tp.textAlign = Paint.Align.CENTER; tp.textSize = size; tp.color = Color.WHITE
+                c.drawText(label, r.centerX(), r.centerY() + size * .35f, tp)
+            }
         }
         if (on) { p.color = Color.WHITE; c.drawCircle(r.centerX(), r.bottom + 12f, 5f, p) }
         w.btns.add(Btn(id, r))
@@ -365,8 +368,12 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
     private fun drawDock() {
         val w = dock; val b = ensure(w); b.eraseColor(0); val c = Canvas(b); w.btns.clear()
         panelBg(c, 1280, 128, 64f)
-        tp.textAlign = Paint.Align.LEFT; tp.textSize = 34f; tp.color = Color.WHITE
-        c.drawText(java.text.SimpleDateFormat("HH:mm", Locale.getDefault()).format(java.util.Date()), 36f, 76f, tp)
+        tp.textAlign = Paint.Align.LEFT; tp.textSize = 36f; tp.color = Color.WHITE
+        c.drawText(java.text.SimpleDateFormat("HH:mm", Locale.getDefault()).format(java.util.Date()), 36f, 66f, tp)
+        val bi = act.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+        val blv = bi?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val bsc = bi?.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100) ?: 100
+        if (blv >= 0 && bsc > 0) { tp.textSize = 24f; tp.color = 0xFF9BA0A8.toInt(); c.drawText((blv * 100 / bsc).toString() + "%", 38f, 102f, tp) }
         val items = ArrayList<Triple<String, String, Int>>()
         items.add(Triple("lib", "LIB", 0xFF4A4D54.toInt()))
         for (a in appList.take(7)) items.add(Triple("app:" + a.id, a.glyph, a.color))
@@ -533,6 +540,8 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
         if (id.startsWith("k:")) { lastKey = id; lastKeyMs = System.currentTimeMillis(); postDelayed({ queueEvent { ui("kb") } }, 190) }
         when {
             id == "back" -> post { browser.back() }
+            id == "menu" -> { dock.visible = !dock.visible; ui("dock") }
+            id == "meta" -> { toggle(apps); ui("dock") }
             id == "lib" -> toggle(apps)
             id == "go" -> go()
             id.startsWith("app:") -> appList.firstOrNull { it.id == id.substring(4) }?.let { load(it.url) }
@@ -570,7 +579,7 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
     private class Ptr(val hand: Hand, val ox: Float, val oy: Float, val tx: Float, val ty: Float, val pinch: Boolean, val k: Int, val palm: Float)
 
     private val ptrs = ArrayList<Ptr>()
-    private class MBtn(val id: String, val cx: Float, val cy: Float, val r: Float)
+    private class MBtn(val id: String, val cx: Float, val cy: Float, val r: Float, val ownerK: Int = -1)
     private val menuBtns = ArrayList<MBtn>()                        // botoes redondos nas pontas dos dedos
     private val menuIds = arrayOf("lib", "kb", "rc", "cfg")        // indicador, medio, anelar, minimo
     private var hostP: Ptr? = null; private var pointerP: Ptr? = null
@@ -597,8 +606,9 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
     private val HAND_TUBE_POS = floatArrayOf(0f, .30f, .62f, 1f)
     private val HAND_SPH = intArrayOf(0xFFF6F9FF.toInt(), 0xFFCBD6F0.toInt(), 0xFF8E9CC4.toInt())
     private val HAND_SPH_POS = floatArrayOf(0f, .55f, 1f)
-    private class HSeg(val x1: Float, val y1: Float, val x2: Float, val y2: Float, val w: Float)
-    private val hsegs = ArrayList<HSeg>()
+    private class HCap(val x1: Float, val y1: Float, val r1: Float, val x2: Float, val y2: Float, val r2: Float)
+    private val hcaps = ArrayList<HCap>()
+    private val qp = Path()
     private val spd = FloatArray(2)                                // velocidade lateral do ponteiro (maos por segundo)
     private var typeToPage = true                                  // teclado digita na pagina (true) ou na barra de endereco (false)
     private var kbShift = 0                                       // 0 = minusculas, 1 = maiuscula so na proxima letra, 2 = caps lock
@@ -760,31 +770,34 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
         val act = pointer
 
         menuBtns.clear()
-        if (host != null && cb != null && ptrs.size >= 2) {          // menu nos dedos so com as duas maos (uma mao aberta so aponta e clica)
-            val hh = host.hand
-            fun HX(i: Int) = (hh.pts[2 * i] * cb.width - cropL) * cropS - ew / 2f
-            fun HY(i: Int) = (hh.pts[2 * i + 1] * cb.height - cropT) * cropS - eh / 2f
-            var ext = 0                                              // dedos estendidos (mao aberta)
-            for (j in 0..3) {
-                val mcp = 5 + 4 * j; val tip = 8 + 4 * j
-                if (hypot(HX(tip) - HX(0), HY(tip) - HY(0)) > hypot(HX(mcp) - HX(0), HY(mcp) - HY(0)) * 1.6f) ext++
-            }
-            if (ext >= 3 && !hh.pinch) {
-                val pl = hypot(HX(5) - HX(17), HY(5) - HY(17)).coerceAtLeast(20f)
-                val r = (pl * .15f).coerceIn(16f, 34f)
+        if (cb != null && ptrs.size >= 2) {                          // dois botoes, como no Quest: ≡ (menu) na mao da esquerda da imagem, logo Meta na da direita
+            val leftQ = ptrs.minByOrNull { it.hand.pts[0] }
+            for (q in ptrs) {
+                val hh = q.hand
+                fun HX(i: Int) = (hh.pts[2 * i] * cb.width - cropL) * cropS - ew / 2f
+                fun HY(i: Int) = (hh.pts[2 * i + 1] * cb.height - cropT) * cropS - eh / 2f
+                var ext = 0                                          // dedos estendidos (mao aberta)
                 for (j in 0..3) {
-                    val tip = 8 + 4 * j; val dip = 7 + 4 * j
-                    var ux = HX(tip) - HX(dip); var uy = HY(tip) - HY(dip)
+                    val mcp = 5 + 4 * j; val tip = 8 + 4 * j
+                    if (hypot(HX(tip) - HX(0), HY(tip) - HY(0)) > hypot(HX(mcp) - HX(0), HY(mcp) - HY(0)) * 1.6f) ext++
+                }
+                if (ext >= 3 && !hh.pinch) {                         // mao aberta: o botao aparece ao lado da palma
+                    val pw = hypot(HX(5) - HX(17), HY(5) - HY(17)).coerceAtLeast(20f)
+                    var ux = HX(5) - HX(17); var uy = HY(5) - HY(17)      // do minimo para o indicador = lado do polegar
                     val nn = hypot(ux, uy).coerceAtLeast(1f); ux /= nn; uy /= nn
-                    menuBtns.add(MBtn(menuIds[j], HX(tip) + ux * r * 1.5f, HY(tip) + uy * r * 1.5f, r))
+                    var vx = HX(9) - HX(0); var vy = HY(9) - HY(0)        // do pulso para os dedos
+                    val vn = hypot(vx, vy).coerceAtLeast(1f); vx /= vn; vy /= vn
+                    val r = (pw * .26f).coerceIn(20f, 40f)
+                    val ccx = (HX(0) + HX(9)) / 2f; val ccy = (HY(0) + HY(9)) / 2f
+                    menuBtns.add(MBtn(if (q === leftQ) "menu" else "meta", ccx + ux * pw * 1.15f + vx * pw * .25f, ccy + uy * pw * 1.15f + vy * pw * .25f, r, q.k))
                 }
             }
         }
-        val pressAllowed = !(menuBtns.isNotEmpty() && pointer === host)
+        val pressAllowed = true
         var mId: String? = null; var mHand: Ptr? = null
         if (mode == 0 && !pinching && menuBtns.isNotEmpty()) {
-            if (pointer != null && pointer !== host) {
-                for (mb in menuBtns) if (hypot(pointer.tx - mb.cx, pointer.ty - mb.cy) < mb.r * 1.25f) { mId = mb.id; mHand = pointer }
+            for (mb in menuBtns) for (pq in ptrs) {                  // o botao de uma mao e apertado pela OUTRA mao
+                if (pq.k != mb.ownerK && hypot(pq.tx - mb.cx, pq.ty - mb.cy) < mb.r * 1.25f) { mId = mb.id; mHand = pq }
             }
             if (mId == null) for (mb in menuBtns) if (hypot(mb.cx, mb.cy) < mb.r * 1.25f) mId = mb.id    // olhar
         }
@@ -806,9 +819,8 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
             prevMid[kk] = q.hand.mid; prevRing[kk] = q.hand.ring; prevPinky[kk] = q.hand.pinky
         }
         for (kk in 0..1) if (!seen[kk]) { prevMid[kk] = false; prevRing[kk] = false; prevPinky[kk] = false }
-        // gesto de sistema: pinca da mao do menu (com a outra mao livre) abre/fecha a biblioteca, como o botao Meta
+        // (o botao Meta agora e um botao de verdade na palma; o antigo gesto de pinca da mao do menu foi removido)
         val hostPinch = host?.hand?.pinch == true
-        if (ptrs.size >= 2 && hostPinch && !prevHostPinch && menuShownPrev && pointer?.hand?.pinch != true) { toggle(apps); ui("dock") }
         prevHostPinch = hostPinch
         menuShownPrev = menuBtns.isNotEmpty()
 
@@ -957,51 +969,150 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
     }
 
     /**
-     * Mao no estilo Meta Quest. Estilo 0: silhueta escura translucida com borda suave e uma linha clara fina (a "mao fantasma").
-     * Estilo 1: so o contorno branco fino (mao real aparecendo pela camera, como na Home com passthrough).
+     * Mao no estilo Meta Quest, montada pelas articulacoes (punho, metacarpos, proximal, intermediaria, distal, ponta).
+     * Estilo 0: silhueta escura translucida com borda suave, linha clara fina e detalhes sutis (realce nos dedos, vincos nas juntas).
+     * Estilo 1: so o contorno azul fino (mao real aparecendo pela camera, como na Home com passthrough).
+     * Anatomia: dedos afunilados com ponta arredondada, membranas entre os dedos, tenar (base do polegar), hipotenar,
+     * teia do polegar; a mao acaba no pulso (fade curto).
      */
     private fun drawHand(c: Canvas, hd: Hand, xs: FloatArray, ys: FloatArray) {
         val s = max(hypot(xs[0] - xs[9], ys[0] - ys[9]), hypot(xs[5] - xs[17], ys[5] - ys[17]) * 1.15f).coerceAtLeast(24f)
         val sc = (s / 120f).coerceIn(.7f, 1.6f)
-        val fwid = floatArrayOf(.170f, .175f, .165f, .145f)          // largura relativa: indicador, medio, anelar, minimo
-        hsegs.clear()
-        for (f in 0..3) for (k in 0..2) {
-            val a = 5 + 4 * f + k
-            hsegs.add(HSeg(xs[a], ys[a], xs[a + 1], ys[a + 1], s * fwid[f] * (1f - .12f * k)))
+        val fwid = floatArrayOf(.215f, .220f, .205f, .180f)          // largura relativa: indicador, medio, anelar, minimo
+        val prof = floatArrayOf(1f, .97f, .88f, .80f)                // raio relativo em MCP, PIP, DIP e ponta
+        hcaps.clear()
+        for (f in 0..3) {
+            val r0 = s * fwid[f] / 2f
+            for (k in 0..2) {
+                val a = 5 + 4 * f + k
+                hcaps.add(HCap(xs[a], ys[a], r0 * prof[k], xs[a + 1], ys[a + 1], r0 * prof[k + 1]))
+            }
+            val tipI = 8 + 4 * f; val dipI = 7 + 4 * f                // a ponta do dedo vai um pouco alem do ponto da ponta
+            val ddx = xs[tipI] - xs[dipI]; val ddy = ys[tipI] - ys[dipI]
+            val dl = hypot(ddx, ddy).coerceAtLeast(.001f)
+            hcaps.add(HCap(xs[tipI], ys[tipI], r0 * prof[3], xs[tipI] + ddx / dl * r0 * .30f, ys[tipI] + ddy / dl * r0 * .30f, r0 * prof[3] * .92f))
         }
-        for (k in 0..2) {
-            val a = 1 + k
-            hsegs.add(HSeg(xs[a], ys[a], xs[a + 1], ys[a + 1], s * .21f * (1f - .13f * k)))
+        for (i in intArrayOf(5, 9, 13)) {                            // membranas entre os dedos
+            val j = i + 4
+            val ri = s * fwid[(i - 5) / 4] / 2f; val rj = s * fwid[(j - 5) / 4] / 2f
+            hcaps.add(HCap(xs[i] + (xs[i + 1] - xs[i]) * .30f, ys[i] + (ys[i + 1] - ys[i]) * .30f, ri * .5f,
+                xs[j] + (xs[j + 1] - xs[j]) * .30f, ys[j] + (ys[j + 1] - ys[j]) * .30f, rj * .5f))
         }
-        hsegs.add(HSeg(xs[2], ys[2], xs[5], ys[5], s * .15f))        // teia entre polegar e indicador
+        val tr = floatArrayOf(s * .150f, s * .135f, s * .115f, s * .100f)
+        for (k in 0..2) hcaps.add(HCap(xs[1 + k], ys[1 + k], tr[k], xs[2 + k], ys[2 + k], tr[k + 1]))
+        val tdx = xs[4] - xs[3]; val tdy = ys[4] - ys[3]
+        val tl = hypot(tdx, tdy).coerceAtLeast(.001f)
+        hcaps.add(HCap(xs[4], ys[4], tr[3], xs[4] + tdx / tl * tr[3] * .3f, ys[4] + tdy / tl * tr[3] * .3f, tr[3] * .92f))
+        hcaps.add(HCap(xs[0], ys[0], s * .13f, xs[1], ys[1], s * .15f))            // tenar (base do polegar)
+        hcaps.add(HCap(xs[0], ys[0], s * .11f, xs[17], ys[17], s * .09f))          // hipotenar (lado do minimo)
+        hcaps.add(HCap(xs[2] + (xs[3] - xs[2]) * .25f, ys[2] + (ys[3] - ys[2]) * .25f, s * .075f,
+            xs[5] + (xs[6] - xs[5]) * .25f, ys[5] + (ys[6] - ys[5]) * .25f, s * .075f))   // teia do polegar
+        hcaps.add(HCap(xs[2], ys[2], s * .09f, xs[5], ys[5], s * .09f))
+        val pidx = intArrayOf(0, 1, 2, 5, 9, 13, 17)
+        val pr = s * .085f
+        val pm = Path(); pm.moveTo(xs[pidx[0]], ys[pidx[0]])
+        for (i in 1 until pidx.size) pm.lineTo(xs[pidx[i]], ys[pidx[i]])
+        pm.close()
+        for (i in pidx.indices) {                                      // palma arredondada
+            val a = pidx[i]; val b = pidx[(i + 1) % pidx.size]
+            hcaps.add(HCap(xs[a], ys[a], pr, xs[b], ys[b], pr))
+        }
+        // antebraco: continua para tras do punho e some aos poucos
         val wdx = xs[0] - xs[9]; val wdy = ys[0] - ys[9]
         val wl = hypot(wdx, wdy).coerceAtLeast(1f)
-        hsegs.add(HSeg(xs[0], ys[0], xs[0] + wdx / wl * s * .30f, ys[0] + wdy / wl * s * .30f, s * .42f))   // punho
-        val pr = s * .08f
-        val pm = Path(); pm.moveTo(xs[0], ys[0])
-        for (i in intArrayOf(1, 2, 5, 9, 13, 17)) pm.lineTo(xs[i], ys[i])
-        pm.close()
+        val fux = wdx / wl; val fuy = wdy / wl
+        val fex = xs[0] + fux * s * .18f; val fey = ys[0] + fuy * s * .18f      // a mao acaba no pulso: so um fade curto
+        val gx0 = xs[0] + fux * s * .18f * .2f; val gy0 = ys[0] + fuy * s * .18f * .2f
         hp.shader = null; hp.xfermode = null
         hp.strokeCap = Paint.Cap.ROUND; hp.strokeJoin = Paint.Join.ROUND
-        fun shapes(extra: Float) {
-            hp.style = Paint.Style.STROKE
-            for (sg in hsegs) { hp.strokeWidth = sg.w + extra; c.drawLine(sg.x1, sg.y1, sg.x2, sg.y2, hp) }
-            hp.style = Paint.Style.FILL_AND_STROKE; hp.strokeWidth = 2f * pr + extra
+        fun cap(x1: Float, y1: Float, r1: Float, x2: Float, y2: Float, r2: Float) {
+            c.drawCircle(x1, y1, r1, hp); c.drawCircle(x2, y2, r2, hp)
+            val dx = x2 - x1; val dy = y2 - y1
+            val l = hypot(dx, dy).coerceAtLeast(.001f)
+            val nx = -dy / l; val ny = dx / l
+            qp.rewind()
+            qp.moveTo(x1 + nx * r1, y1 + ny * r1); qp.lineTo(x2 + nx * r2, y2 + ny * r2)
+            qp.lineTo(x2 - nx * r2, y2 - ny * r2); qp.lineTo(x1 - nx * r1, y1 - ny * r1)
+            qp.close()
+            c.drawPath(qp, hp)
+        }
+        // fa: 0 = sem antebraco, 1 = antebraco que some (gradiente), 2 = antebraco inteiro
+        fun shapes(extra: Float, fa: Int) {
+            val e = extra / 2f
+            hp.style = Paint.Style.FILL
             c.drawPath(pm, hp)
+            for (cp in hcaps) cap(cp.x1, cp.y1, cp.r1 + e, cp.x2, cp.y2, cp.r2 + e)
+            if (fa != 0) {
+                val c0 = hp.color
+                if (fa == 1) {
+                    hp.shader = LinearGradient(gx0, gy0, fex, fey, c0, c0 and 0x00FFFFFF, Shader.TileMode.CLAMP)
+                    hp.color = 0xFF000000.toInt()                      // com shader, o alpha vem do gradiente
+                }
+                cap(xs[0], ys[0], s * .28f + e, fex, fey, s * .27f + e)
+                hp.shader = null; hp.color = c0
+            }
         }
         if (handStyle == 0) {
-            hp.color = 0x1A1F2227; shapes(26f * sc)                      // borda suave: sombra difusa em volta da mao
-            hp.color = 0x2C1F2227; shapes(15f * sc)
-            hp.color = 0x4E1F2227; shapes(7f * sc)
-            hp.color = 0xFF8A909A.toInt(); shapes(3.5f)                  // linha clara fina na borda
-            hp.color = 0xFF2A2D33.toInt(); shapes(0f)                    // corpo
+            hp.color = 0x1A1F2227; shapes(26f * sc, 1)                 // borda suave: sombra difusa em volta da mao
+            hp.color = 0x2C1F2227; shapes(15f * sc, 1)
+            hp.color = 0x4E1F2227; shapes(7f * sc, 1)
+            hp.color = 0xFF8A909A.toInt(); shapes(3.5f, 0)             // linha clara fina na borda
+            hp.color = 0xFF2A2D33.toInt(); shapes(0f, 1)               // corpo
+            // detalhes sutis de um dedo: realce ao longo dele e vincos nas juntas
+            fun fingerDetails(f: Int) {
+                val r0 = s * fwid[f] / 2f
+                for (k in 0..2) {
+                    val a = 5 + 4 * f + k
+                    val dx = xs[a + 1] - xs[a]; val dy = ys[a + 1] - ys[a]
+                    val l = hypot(dx, dy).coerceAtLeast(.001f)
+                    var nx = -dy / l; var ny = dx / l
+                    if (nx * -.55f + ny * -.83f < 0f) { nx = -nx; ny = -ny }     // lado da luz (cima/esquerda)
+                    val off = r0 * prof[k] * .28f
+                    hp.style = Paint.Style.STROKE; hp.strokeCap = Paint.Cap.ROUND
+                    hp.color = 0x0AFFFFFF; hp.strokeWidth = r0 * .55f
+                    c.drawLine(xs[a] + nx * off, ys[a] + ny * off, xs[a + 1] + nx * off, ys[a + 1] + ny * off, hp)
+                    hp.color = 0x10FFFFFF; hp.strokeWidth = r0 * .26f
+                    c.drawLine(xs[a] + nx * off, ys[a] + ny * off, xs[a + 1] + nx * off, ys[a + 1] + ny * off, hp)
+                    if (k > 0) {                                       // vinco na articulacao (PIP e DIP)
+                        val hw = r0 * prof[k] * .62f
+                        hp.color = 0x18FFFFFF; hp.strokeWidth = max(1.5f, s * .012f); hp.strokeCap = Paint.Cap.BUTT
+                        c.drawLine(xs[a] - nx * hw, ys[a] - ny * hw, xs[a] + nx * hw, ys[a] + ny * hw, hp)
+                    }
+                }
+            }
+            // dedos dobrados ou apontando para a camera: do mais longe ao mais perto, cada um com contorno proprio
+            // (assim o punho nao vira um bloco so e o polegar aparece na frente)
+            val curledG = BooleanArray(5)
+            for (g in 0..4) {
+                val b0 = if (g == 4) 1 else 5 + 4 * g
+                val l1 = hypot(xs[b0 + 1] - xs[b0], ys[b0 + 1] - ys[b0])
+                val l2 = hypot(xs[b0 + 2] - xs[b0 + 1], ys[b0 + 2] - ys[b0 + 1])
+                val l3 = hypot(xs[b0 + 3] - xs[b0 + 2], ys[b0 + 3] - ys[b0 + 2])
+                val direct = hypot(xs[b0 + 3] - xs[b0], ys[b0 + 3] - ys[b0])
+                curledG[g] = direct < (l1 + l2 + l3) * (if (g == 4) .85f else .88f)
+            }
+            val order = intArrayOf(0, 1, 2, 3, 4).sortedByDescending { g ->
+                val b0 = if (g == 4) 1 else 5 + 4 * g
+                hd.z[b0] + hd.z[b0 + 1] + hd.z[b0 + 2] + hd.z[b0 + 3]
+            }
+            for (g in order) {
+                if (!curledG[g]) continue
+                val from = if (g == 4) 19 else g * 4                   // posicao do grupo na lista hcaps (4 capsulas por dedo)
+                hp.style = Paint.Style.FILL
+                hp.color = 0xFF1B1D21.toInt()
+                for (i in from until from + 4) { val cp = hcaps[i]; cap(cp.x1, cp.y1, cp.r1, cp.x2, cp.y2, cp.r2) }
+                hp.color = 0xFF2A2D33.toInt()
+                for (i in from until from + 4) { val cp = hcaps[i]; cap(cp.x1, cp.y1, max(cp.r1 - 2f, 1f), cp.x2, cp.y2, max(cp.r2 - 2f, 1f)) }
+                if (g < 4) fingerDetails(g)
+            }
+            for (f in 0..3) if (!curledG[f]) fingerDetails(f)
         } else {
-            hp.color = 0xFFF1F3F6.toInt(); shapes(4f)                    // contorno branco fino
+            hp.color = 0xFF6FA6FF.toInt(); shapes(4.5f, 1)             // contorno azul fino do Quest (some no pulso)
             hp.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
-            shapes(0f)                                                   // apaga o miolo
+            shapes(0f, 2)                                              // apaga o miolo
             hp.xfermode = null
         }
-        hp.shader = null
+        hp.shader = null; hp.style = Paint.Style.FILL; hp.strokeCap = Paint.Cap.BUTT
     }
 
     /** Botao redondo na ponta do dedo, com icone desenhado (casa, teclado, centrar, engrenagem). */
@@ -1010,18 +1121,34 @@ class VrGlView(private val act: Activity, private val browser: BrowserSurface, p
         val x = mb.cx; val y = mb.cy; val r = mb.r
         hp.shader = null
         hp.style = Paint.Style.FILL
-        hp.color = if (hot) (if (menuPressing) 0xFF6EA8FF.toInt() else 0xFF6A6A6A.toInt()) else 0xE62A2A2A.toInt()
+        hp.color = if (hot) (if (menuPressing) 0xFF6EA8FF.toInt() else 0xFF6A6A6A.toInt()) else 0xCC1F2023.toInt()
         c.drawCircle(x, y, r, hp)
-        hp.style = Paint.Style.STROKE; hp.strokeWidth = 2f; hp.color = 0xAAE6E6E6.toInt()
+        hp.style = Paint.Style.STROKE; hp.strokeWidth = 2.5f; hp.color = 0xDDFFFFFF.toInt()
         c.drawCircle(x, y, r, hp)
+        glyph(c, mb.id, x, y, r)
+        hp.style = Paint.Style.FILL
+    }
+    private fun glyph(c: Canvas, id: String, x: Float, y: Float, r: Float) {
+        hp.shader = null; hp.xfermode = null; hp.style = Paint.Style.STROKE
         hp.color = Color.WHITE; hp.strokeWidth = max(2f, r * .09f)
         hp.strokeCap = Paint.Cap.ROUND; hp.strokeJoin = Paint.Join.ROUND
-        when (mb.id) {
+        when (id) {
             "lib" -> {
-                val roof = Path()
-                roof.moveTo(x - r * .55f, y - r * .02f); roof.lineTo(x, y - r * .55f); roof.lineTo(x + r * .55f, y - r * .02f)
-                c.drawPath(roof, hp)
-                c.drawRect(x - r * .38f, y - r * .02f, x + r * .38f, y + r * .48f, hp)
+                hp.style = Paint.Style.FILL
+                val g = r * .17f; val gp = r * .46f
+                for (i in -1..1) for (j in -1..1) c.drawRoundRect(RectF(x + i * gp - g, y + j * gp - g, x + i * gp + g, y + j * gp + g), g * .35f, g * .35f, hp)
+            }
+            "menu" -> { for (i in -1..1) c.drawLine(x - r * .42f, y + i * r * .34f, x + r * .42f, y + i * r * .34f, hp) }
+            "meta" -> {                                            // logo Meta: laco infinito
+                val lp = Path()
+                for (i in 0..48) {
+                    val t = i * (2f * PI.toFloat() / 48f)
+                    val den = 1f + sin(t) * sin(t)
+                    val lx = x + r * .62f * cos(t) / den; val ly = y + r * .62f * sin(t) * cos(t) / den
+                    if (i == 0) lp.moveTo(lx, ly) else lp.lineTo(lx, ly)
+                }
+                hp.strokeWidth = max(2.4f, r * .12f)
+                c.drawPath(lp, hp)
             }
             "kb" -> {
                 c.drawRoundRect(RectF(x - r * .6f, y - r * .32f, x + r * .6f, y + r * .32f), r * .1f, r * .1f, hp)
